@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/crypto/ssh/terminal"
 )
@@ -40,19 +41,19 @@ func main() {
 
 	if help {
 		usage()
-		return
+		os.Exit(0)
 	}
 
 	if version {
-		fmt.Fprintln(output, "1.0.0")
-		return
+		fmt.Fprintln(output, "1.1.0")
+		os.Exit(0)
 	}
 
 	args := flag.Args()
 
 	if len(args) < 1 {
 		usage()
-		return
+		os.Exit(1)
 	}
 
 	image := args[0]
@@ -63,12 +64,14 @@ func main() {
 
 	workdir, err := filepath.Abs("")
 	if err != nil {
-		return
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 
 	user, err := user.Current()
 	if err != nil {
-		return
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 
 	volumes := []string{workdir}
@@ -81,7 +84,8 @@ func main() {
 
 			path, err = filepath.Abs(path)
 			if err != nil {
-				return
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
 			}
 
 			if !stat.IsDir() {
@@ -98,22 +102,64 @@ func main() {
 		"run", "--interactive", "--rm", "--network", "host",
 		"--user", user.Uid + ":" + user.Gid,
 		"--workdir", workdir,
+		"--env", "debian_chroot=drun",
+	}
+
+	if hostname, err := os.Hostname(); err == nil {
+		run = append(run, "--hostname", hostname)
+	}
+
+	if _, err := os.Stat("/etc/localtime"); err == nil {
+		run = append(run, "--volume", "/etc/localtime:/etc/localtime:ro")
+	} else {
+		timezone, _ := time.Now().In(time.Local).Zone()
+		run = append(run, "--env", "TZ="+timezone)
+	}
+
+	if v, ok := os.LookupEnv("LANG"); ok {
+		run = append(run, "--env", "LANG="+v)
+	}
+
+	if v, ok := os.LookupEnv("LANGUAGE"); ok {
+		run = append(run, "--env", "LANGUAGE="+v)
+	}
+
+	if v, ok := os.LookupEnv("LC_ALL"); ok {
+		run = append(run, "--env", "LC_ALL="+v)
+	}
+
+	if v, ok := os.LookupEnv("DISPLAY"); ok {
+		run = append(run, "--env", "DISPLAY="+v)
+
+		path := filepath.Join(user.HomeDir, ".Xauthority")
+		if v, ok := os.LookupEnv("XAUTHORITY"); ok {
+			path = v
+		}
+		if _, err := os.Stat(path); err == nil {
+			run = append(run, "--volume", path+":/root/.Xauthority:ro")
+			run = append(run, "--env", "XAUTHORITY=/root/.Xauthority")
+		}
+	}
+
+	if v, ok := os.LookupEnv("TERM"); ok {
+		run = append(run, "--env", "TERM="+v)
+	}
+
+	if v, ok := os.LookupEnv("COLORTERM"); ok {
+		run = append(run, "--env", "COLORTERM="+v)
 	}
 
 	if terminal.IsTerminal(syscall.Stdin) {
 		run = append(run, "--tty")
 
 		if cols, lines, err := terminal.GetSize(syscall.Stdin); err == nil {
-			run = append(run, "--env")
-			run = append(run, "COLUMNS="+strconv.Itoa(cols))
-			run = append(run, "--env")
-			run = append(run, "LINES="+strconv.Itoa(lines))
+			run = append(run, "--env", "COLUMNS="+strconv.Itoa(cols))
+			run = append(run, "--env", "LINES="+strconv.Itoa(lines))
 		}
 	}
 
 	for _, volume := range volumes {
-		run = append(run, "--volume")
-		run = append(run, volume+":"+volume+":rw")
+		run = append(run, "--volume", volume+":"+volume+":rw")
 	}
 
 	run = append(run, image)
@@ -121,7 +167,7 @@ func main() {
 
 	if dry {
 		fmt.Fprintln(output, "docker", strings.Join(run, " "))
-		return
+		os.Exit(0)
 	}
 
 	cmd := exec.Command("docker", run...)
@@ -129,5 +175,8 @@ func main() {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	cmd.Run()
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 }
